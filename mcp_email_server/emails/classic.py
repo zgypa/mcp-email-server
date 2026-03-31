@@ -455,13 +455,13 @@ class EmailClient:
         - flags: List of flags (e.g., \\Noselect, \\HasChildren)
         - delimiter: The hierarchy delimiter (usually "/" or ".")
         """
-        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        imap = self._imap_connect()
         mailboxes = []
 
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(self.email_server.user_name, self.email_server.password)
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
 
             # List all mailboxes
@@ -522,12 +522,12 @@ class EmailClient:
         Returns:
             Dictionary with query, total count, page, and list of email metadata.
         """
-        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        imap = self._imap_connect()
 
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(self.email_server.user_name, self.email_server.password)
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
 
@@ -1170,14 +1170,14 @@ class EmailClient:
         self, email_ids: list[str], mailbox: str = "INBOX", read: bool = True
     ) -> tuple[list[str], list[str]]:
         """Mark emails as read or unread by their UIDs. Returns (success_ids, failed_ids)."""
-        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        imap = self._imap_connect()
         success_ids = []
         failed_ids = []
 
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(self.email_server.user_name, self.email_server.password)
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(mailbox))
 
@@ -1204,14 +1204,14 @@ class EmailClient:
 
         Uses IMAP MOVE command (RFC 6851) if supported, otherwise falls back to COPY + DELETE.
         """
-        imap = self.imap_class(self.email_server.host, self.email_server.port)
+        imap = self._imap_connect()
         moved_ids = []
         failed_ids = []
 
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
-            await imap.login(self.email_server.user_name, self.email_server.password)
+            await imap.login(self.email_server.user_name, self.email_server.password.get_secret_value())
             await _send_imap_id(imap)
             await imap.select(_quote_mailbox(source_mailbox))
 
