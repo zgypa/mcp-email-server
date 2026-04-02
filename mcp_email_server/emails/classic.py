@@ -19,7 +19,7 @@ from typing import Any
 import aioimaplib
 import aiosmtplib
 
-from mcp_email_server.config import EmailServer, EmailSettings
+from mcp_email_server.config import CONFIG_PATH, EmailServer, EmailSettings
 from mcp_email_server.emails import EmailHandler
 from mcp_email_server.emails.models import (
     AttachmentDownloadResponse,
@@ -1149,17 +1149,17 @@ class EmailClient:
         self,
         msg: MIMEText | MIMEMultipart,
         incoming_server: EmailServer,
-        draft_folder_name: str | None = None,
-    ) -> bool:
-        """Save a message to the IMAP Drafts folder without sending it.
+        draft_folder_name: str,
+    ) -> None:
+        """Save a message to the configured IMAP Drafts folder without sending it.
 
         Args:
             msg: The email message to save as draft
             incoming_server: IMAP server configuration
-            draft_folder_name: Override folder name, or None for auto-detection
+            draft_folder_name: The exact Drafts folder name from config (required)
 
-        Returns:
-            True if successfully saved, False otherwise
+        Raises:
+            OSError: If the folder cannot be selected or the APPEND fails
         """
         if incoming_server.use_ssl:
             imap_ssl_context = _create_ssl_context(incoming_server.verify_ssl)
@@ -1167,50 +1167,33 @@ class EmailClient:
         else:
             imap = aioimaplib.IMAP4(incoming_server.host, incoming_server.port)
 
-        draft_folder_candidates = [
-            draft_folder_name,
-            "Drafts",
-            "INBOX.Drafts",
-            "Draft",
-            "[Gmail]/Drafts",
-            "INBOX/Drafts",
-            "INBOX.Bozze",  # Aruba PEC (Italian)
-        ]
-        draft_folder_candidates = [f for f in draft_folder_candidates if f]
-
         try:
             await imap._client_task
             await imap.wait_hello_from_server()
             await imap.login(incoming_server.user_name, incoming_server.password.get_secret_value())
             await _send_imap_id(imap)
 
-            for folder in draft_folder_candidates:
-                try:
-                    result = await imap.select(_quote_mailbox(folder))
-                    status = result[0] if isinstance(result, tuple) else result
-                    if str(status).upper() == "OK":
-                        msg_bytes = msg.as_bytes()
-                        append_result = await imap.append(
-                            msg_bytes,
-                            mailbox=_quote_mailbox(folder),
-                            flags=r"(\Draft)",
-                        )
-                        append_status = append_result[0] if isinstance(append_result, tuple) else append_result
-                        if str(append_status).upper() == "OK":
-                            logger.info(f"Saved draft to '{folder}'")
-                            return True
-                        else:
-                            logger.warning(f"Failed to append draft to '{folder}': {append_status}")
-                except Exception as e:
-                    logger.debug(f"Drafts folder '{folder}' not available: {e}")
-                    continue
+            select_result = await imap.select(_quote_mailbox(draft_folder_name))
+            select_status = select_result[0] if isinstance(select_result, tuple) else select_result
+            if str(select_status).upper() != "OK":
+                raise OSError(
+                    f"Drafts folder '{draft_folder_name}' could not be selected (status: {select_status}). "
+                    f"Check that draft_folder_name in {CONFIG_PATH} is correct."
+                )
 
-            logger.warning("Could not find a valid Drafts folder to save the message")
-            return False
+            append_result = await imap.append(
+                msg.as_bytes(),
+                mailbox=_quote_mailbox(draft_folder_name),
+                flags=r"(\Draft)",
+            )
+            append_status = append_result[0] if isinstance(append_result, tuple) else append_result
+            if str(append_status).upper() != "OK":
+                raise OSError(
+                    f"Failed to append message to Drafts folder '{draft_folder_name}': {append_status}"
+                )
 
-        except Exception as e:
-            logger.error(f"Error saving to Drafts folder: {e}")
-            return False
+            logger.info(f"Saved draft to '{draft_folder_name}'")
+
         finally:
             try:
                 await imap.logout()
@@ -1465,6 +1448,16 @@ class ClassicEmailHandler(EmailHandler):
         if send_to_drafts:
             # Safety gate: save to Drafts instead of sending via SMTP.
             # Set SEND_TO_DRAFTS=False in the environment to actually send.
+            if not self.draft_folder_name:
+                raise ValueError(
+                    f"Cannot save to Drafts: no draft_folder_name is configured for account "
+                    f"'{self.email_settings.account_name}'. "
+                    f"Open {CONFIG_PATH} and add the following line under the [[emails]] "
+                    f"section for this account:\n"
+                    f'    draft_folder_name = "Drafts"  '
+                    f"# Replace with the correct folder name for your provider "
+                    f"(e.g. \"[Gmail]/Drafts\", \"INBOX.Bozze\")."
+                )
             logger.warning(
                 "SEND_TO_DRAFTS=True: saving email to Drafts folder instead of sending. "
                 "Set SEND_TO_DRAFTS=False to enable actual sending."

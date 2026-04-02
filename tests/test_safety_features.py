@@ -231,10 +231,32 @@ class TestSendGoesToDrafts:
     """ClassicEmailHandler.send_email saves to Drafts by default (SEND_TO_DRAFTS=True)."""
 
     @pytest.mark.asyncio
+    async def test_raises_when_draft_folder_not_configured(self, monkeypatch):
+        """If draft_folder_name is not set, send_email raises ValueError with actionable message."""
+        monkeypatch.delenv("SEND_TO_DRAFTS", raising=False)
+        settings = EmailSettings(
+            account_name="test_account",
+            full_name="Test User",
+            email_address="test@example.com",
+            # draft_folder_name intentionally omitted
+            incoming=EmailServer(user_name="u", password="p", host="imap.example.com", port=993, use_ssl=True),
+            outgoing=EmailServer(user_name="u", password="p", host="smtp.example.com", port=465, use_ssl=True),
+        )
+        h = ClassicEmailHandler(settings)
+
+        with pytest.raises(ValueError) as exc_info:
+            await h.send_email(recipients=["r@example.com"], subject="Test", body="Hello")
+
+        error = str(exc_info.value)
+        assert "draft_folder_name" in error
+        assert "test_account" in error  # names the account
+        assert "config.toml" in error or "config" in error.lower()  # points to the config file
+
+    @pytest.mark.asyncio
     async def test_smtp_not_called_by_default(self, handler, monkeypatch):
         """When SEND_TO_DRAFTS is unset (defaults True), SMTP is never used."""
         monkeypatch.delenv("SEND_TO_DRAFTS", raising=False)
-        mock_drafts = AsyncMock(return_value=True)
+        mock_drafts = AsyncMock(return_value=None)
 
         with patch.object(handler.outgoing_client, "save_to_drafts", mock_drafts):
             with patch("aiosmtplib.SMTP") as mock_smtp_cls:
@@ -251,7 +273,7 @@ class TestSendGoesToDrafts:
     async def test_smtp_not_called_when_env_true(self, handler, monkeypatch):
         """When SEND_TO_DRAFTS=True explicitly, SMTP is not used."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "True")
-        mock_drafts = AsyncMock(return_value=True)
+        mock_drafts = AsyncMock(return_value=None)
 
         with patch.object(handler.outgoing_client, "save_to_drafts", mock_drafts):
             with patch("aiosmtplib.SMTP") as mock_smtp_cls:
@@ -268,7 +290,7 @@ class TestSendGoesToDrafts:
     async def test_save_to_drafts_receives_correct_folder(self, handler, monkeypatch):
         """save_to_drafts is called with the configured draft_folder_name."""
         monkeypatch.delenv("SEND_TO_DRAFTS", raising=False)
-        mock_drafts = AsyncMock(return_value=True)
+        mock_drafts = AsyncMock(return_value=None)
 
         with patch.object(handler.outgoing_client, "save_to_drafts", mock_drafts):
             await handler.send_email(
@@ -338,7 +360,7 @@ class TestSendMcpTool:
     async def test_mcp_send_goes_to_drafts_by_default(self, handler, monkeypatch):
         """MCP send_email tool: SMTP not called, draft saved, when SEND_TO_DRAFTS unset."""
         monkeypatch.delenv("SEND_TO_DRAFTS", raising=False)
-        mock_drafts = AsyncMock(return_value=True)
+        mock_drafts = AsyncMock(return_value=None)
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=handler):
             with patch.object(handler.outgoing_client, "save_to_drafts", mock_drafts):
