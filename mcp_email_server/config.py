@@ -92,6 +92,7 @@ class EmailSettings(AccountAttributes):
     sent_folder_name: str | None = None  # Override Sent folder name (auto-detect if None)
     trash_folder_name: str | None = None  # Override Trash folder name (auto-detect if None)
     draft_folder_name: str | None = None  # Override Drafts folder name (auto-detect if None)
+    signature: str | None = None  # Email signature appended to outgoing messages
 
     @classmethod
     def init(

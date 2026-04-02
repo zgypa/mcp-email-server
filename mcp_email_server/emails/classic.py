@@ -1329,6 +1329,7 @@ class ClassicEmailHandler(EmailHandler):
         self.sent_folder_name = email_settings.sent_folder_name
         self.trash_folder_name = email_settings.trash_folder_name
         self.draft_folder_name = email_settings.draft_folder_name
+        self.signature = email_settings.signature
 
     async def list_mailboxes(self) -> list[dict]:
         """List all mailboxes (folders) in the email account."""
@@ -1444,6 +1445,9 @@ class ClassicEmailHandler(EmailHandler):
         references: str | None = None,
     ) -> None:
         send_to_drafts = os.getenv("SEND_TO_DRAFTS", "True").lower() in ("true", "1", "yes", "on")
+
+        if self.signature and not html:
+            body = body + "\n\n-- \n" + self.signature
 
         if send_to_drafts:
             # Safety gate: save to Drafts instead of sending via SMTP.
