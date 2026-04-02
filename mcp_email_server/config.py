@@ -90,6 +90,8 @@ class EmailSettings(AccountAttributes):
     outgoing: EmailServer
     save_to_sent: bool = True  # Save sent emails to IMAP Sent folder
     sent_folder_name: str | None = None  # Override Sent folder name (auto-detect if None)
+    trash_folder_name: str | None = None  # Override Trash folder name (auto-detect if None)
+    draft_folder_name: str | None = None  # Override Drafts folder name (auto-detect if None)
 
     @classmethod
     def init(

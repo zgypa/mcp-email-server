@@ -1,6 +1,7 @@
 import asyncio
 import email.utils
 import mimetypes
+import os
 import re
 import ssl
 import time
@@ -480,8 +481,6 @@ class EmailClient:
                     continue
 
                 # Parse the response
-                import re
-
                 match = re.match(r'\(([^)]*)\)\s+"([^"]+)"\s+"?([^"]+)"?', item_str)
                 if match:
                     flags_str, delimiter, name = match.groups()
@@ -940,6 +939,51 @@ class EmailClient:
 
         return msg
 
+    def build_email_message(
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
+        attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> MIMEText | MIMEMultipart:
+        """Build a MIME email message without sending it."""
+        if attachments:
+            msg = self._create_message_with_attachments(body, html, attachments)
+        else:
+            content_type = "html" if html else "plain"
+            msg = MIMEText(body, content_type, "utf-8")
+
+        if any(ord(c) > 127 for c in subject):
+            msg["Subject"] = Header(subject, "utf-8")
+        else:
+            msg["Subject"] = subject
+
+        if any(ord(c) > 127 for c in self.sender):
+            msg["From"] = Header(self.sender, "utf-8")
+        else:
+            msg["From"] = self.sender
+
+        msg["To"] = ", ".join(recipients)
+
+        if cc:
+            msg["Cc"] = ", ".join(cc)
+
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            msg["References"] = references
+
+        msg["Date"] = email.utils.formatdate(localtime=True)
+        sender_domain = self.sender.rsplit("@", 1)[-1].rstrip(">")
+        msg["Message-Id"] = email.utils.make_msgid(domain=sender_domain)
+
+        return msg
+
     async def send_email(
         self,
         recipients: list[str],
@@ -952,42 +996,7 @@ class EmailClient:
         in_reply_to: str | None = None,
         references: str | None = None,
     ):
-        # Create message with or without attachments
-        if attachments:
-            msg = self._create_message_with_attachments(body, html, attachments)
-        else:
-            content_type = "html" if html else "plain"
-            msg = MIMEText(body, content_type, "utf-8")
-
-        # Handle subject with special characters
-        if any(ord(c) > 127 for c in subject):
-            msg["Subject"] = Header(subject, "utf-8")
-        else:
-            msg["Subject"] = subject
-
-        # Handle sender name with special characters
-        if any(ord(c) > 127 for c in self.sender):
-            msg["From"] = Header(self.sender, "utf-8")
-        else:
-            msg["From"] = self.sender
-
-        msg["To"] = ", ".join(recipients)
-
-        # Add CC header if provided (visible to recipients)
-        if cc:
-            msg["Cc"] = ", ".join(cc)
-
-        # Set threading headers for replies
-        if in_reply_to:
-            msg["In-Reply-To"] = in_reply_to
-        if references:
-            msg["References"] = references
-
-        # Set Date and Message-Id headers so the same values appear in both
-        # the SMTP-sent copy and the IMAP Sent folder copy
-        msg["Date"] = email.utils.formatdate(localtime=True)
-        sender_domain = self.sender.rsplit("@", 1)[-1].rstrip(">")
-        msg["Message-Id"] = email.utils.make_msgid(domain=sender_domain)
+        msg = self.build_email_message(recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references)
 
         # Note: BCC recipients are not added to headers (they remain hidden)
         # but will be included in the actual recipients for SMTP delivery
@@ -1136,6 +1145,78 @@ class EmailClient:
             except Exception as e:
                 logger.debug(f"Error during logout: {e}")
 
+    async def save_to_drafts(
+        self,
+        msg: MIMEText | MIMEMultipart,
+        incoming_server: EmailServer,
+        draft_folder_name: str | None = None,
+    ) -> bool:
+        """Save a message to the IMAP Drafts folder without sending it.
+
+        Args:
+            msg: The email message to save as draft
+            incoming_server: IMAP server configuration
+            draft_folder_name: Override folder name, or None for auto-detection
+
+        Returns:
+            True if successfully saved, False otherwise
+        """
+        if incoming_server.use_ssl:
+            imap_ssl_context = _create_ssl_context(incoming_server.verify_ssl)
+            imap = aioimaplib.IMAP4_SSL(incoming_server.host, incoming_server.port, ssl_context=imap_ssl_context)
+        else:
+            imap = aioimaplib.IMAP4(incoming_server.host, incoming_server.port)
+
+        draft_folder_candidates = [
+            draft_folder_name,
+            "Drafts",
+            "INBOX.Drafts",
+            "Draft",
+            "[Gmail]/Drafts",
+            "INBOX/Drafts",
+            "INBOX.Bozze",  # Aruba PEC (Italian)
+        ]
+        draft_folder_candidates = [f for f in draft_folder_candidates if f]
+
+        try:
+            await imap._client_task
+            await imap.wait_hello_from_server()
+            await imap.login(incoming_server.user_name, incoming_server.password.get_secret_value())
+            await _send_imap_id(imap)
+
+            for folder in draft_folder_candidates:
+                try:
+                    result = await imap.select(_quote_mailbox(folder))
+                    status = result[0] if isinstance(result, tuple) else result
+                    if str(status).upper() == "OK":
+                        msg_bytes = msg.as_bytes()
+                        append_result = await imap.append(
+                            msg_bytes,
+                            mailbox=_quote_mailbox(folder),
+                            flags=r"(\Draft)",
+                        )
+                        append_status = append_result[0] if isinstance(append_result, tuple) else append_result
+                        if str(append_status).upper() == "OK":
+                            logger.info(f"Saved draft to '{folder}'")
+                            return True
+                        else:
+                            logger.warning(f"Failed to append draft to '{folder}': {append_status}")
+                except Exception as e:
+                    logger.debug(f"Drafts folder '{folder}' not available: {e}")
+                    continue
+
+            logger.warning("Could not find a valid Drafts folder to save the message")
+            return False
+
+        except Exception as e:
+            logger.error(f"Error saving to Drafts folder: {e}")
+            return False
+        finally:
+            try:
+                await imap.logout()
+            except Exception as e:
+                logger.debug(f"Error during logout: {e}")
+
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
         imap = self._imap_connect()
@@ -1263,6 +1344,8 @@ class ClassicEmailHandler(EmailHandler):
         )
         self.save_to_sent = email_settings.save_to_sent
         self.sent_folder_name = email_settings.sent_folder_name
+        self.trash_folder_name = email_settings.trash_folder_name
+        self.draft_folder_name = email_settings.draft_folder_name
 
     async def list_mailboxes(self) -> list[dict]:
         """List all mailboxes (folders) in the email account."""
@@ -1377,24 +1460,52 @@ class ClassicEmailHandler(EmailHandler):
         in_reply_to: str | None = None,
         references: str | None = None,
     ) -> None:
-        msg = await self.outgoing_client.send_email(
-            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
-        )
+        send_to_drafts = os.getenv("SEND_TO_DRAFTS", "True").lower() in ("true", "1", "yes", "on")
 
-        # Save to Sent folder if enabled
-        if self.save_to_sent and msg:
+        if send_to_drafts:
+            # Safety gate: save to Drafts instead of sending via SMTP.
+            # Set SEND_TO_DRAFTS=False in the environment to actually send.
+            logger.warning(
+                "SEND_TO_DRAFTS=True: saving email to Drafts folder instead of sending. "
+                "Set SEND_TO_DRAFTS=False to enable actual sending."
+            )
+            msg = self.outgoing_client.build_email_message(
+                recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+            )
             try:
-                await self.outgoing_client.append_to_sent(
+                await self.outgoing_client.save_to_drafts(
                     msg,
                     self.email_settings.incoming,
-                    self.sent_folder_name,
+                    self.draft_folder_name,
                 )
             except Exception as e:
-                logger.error(f"Failed to save email to Sent folder: {e}", exc_info=True)
+                logger.error(f"Failed to save email to Drafts folder: {e}", exc_info=True)
+                raise
+        else:
+            msg = await self.outgoing_client.send_email(
+                recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+            )
+
+            # Save to Sent folder if enabled
+            if self.save_to_sent and msg:
+                try:
+                    await self.outgoing_client.append_to_sent(
+                        msg,
+                        self.email_settings.incoming,
+                        self.sent_folder_name,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save email to Sent folder: {e}", exc_info=True)
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
-        """Delete emails by their UIDs. Returns (deleted_ids, failed_ids)."""
-        return await self.incoming_client.delete_emails(email_ids, mailbox)
+        """Move emails to Trash instead of permanently deleting them.
+
+        Permanent IMAP deletion is disabled for safety. Emails are moved to the
+        configured trash folder (trash_folder_name in config, default: "Trash").
+        Returns (moved_ids, failed_ids).
+        """
+        trash_folder = self.trash_folder_name or "Trash"
+        return await self.incoming_client.move_emails(email_ids, trash_folder, mailbox)
 
     async def mark_emails_as_read(
         self, email_ids: list[str], mailbox: str = "INBOX", read: bool = True

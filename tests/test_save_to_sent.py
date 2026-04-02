@@ -192,8 +192,9 @@ class TestClassicEmailHandlerSaveToSent:
         assert handler.save_to_sent is False
 
     @pytest.mark.asyncio
-    async def test_send_email_calls_append_to_sent(self, email_settings_with_save_to_sent):
-        """Test that send_email calls append_to_sent when enabled."""
+    async def test_send_email_calls_append_to_sent(self, email_settings_with_save_to_sent, monkeypatch):
+        """Test that send_email calls append_to_sent when enabled (SEND_TO_DRAFTS=False)."""
+        monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         handler = ClassicEmailHandler(email_settings_with_save_to_sent)
 
         mock_msg = MIMEText("Test body")
@@ -216,8 +217,9 @@ class TestClassicEmailHandlerSaveToSent:
                 )
 
     @pytest.mark.asyncio
-    async def test_send_email_skips_append_when_disabled(self, email_settings_without_save_to_sent):
-        """Test that send_email skips append_to_sent when disabled."""
+    async def test_send_email_skips_append_when_disabled(self, email_settings_without_save_to_sent, monkeypatch):
+        """Test that send_email skips append_to_sent when disabled (SEND_TO_DRAFTS=False)."""
+        monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         handler = ClassicEmailHandler(email_settings_without_save_to_sent)
 
         mock_msg = MIMEText("Test body")
@@ -625,8 +627,9 @@ class TestHandlerErrorHandling:
     """Tests for error handling in ClassicEmailHandler.send_email."""
 
     @pytest.mark.asyncio
-    async def test_send_email_continues_on_append_error(self):
-        """Test that send_email continues even if append_to_sent fails."""
+    async def test_send_email_continues_on_append_error(self, monkeypatch):
+        """Test that send_email continues even if append_to_sent fails (SEND_TO_DRAFTS=False)."""
+        monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         settings = EmailSettings(
             account_name="test",
             full_name="Test User",

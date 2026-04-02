@@ -167,14 +167,12 @@ class TestClassicEmailHandler:
                 )
 
     @pytest.mark.asyncio
-    async def test_send_email(self, classic_handler):
-        """Test send_email method."""
-        # Mock the outgoing_client.send_email method
+    async def test_send_email(self, classic_handler, monkeypatch):
+        """Test send_email method sends via SMTP when SEND_TO_DRAFTS=False."""
+        monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         mock_send = AsyncMock()
 
-        # Apply the mock
         with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
-            # Call the method
             await classic_handler.send_email(
                 recipients=["recipient@example.com"],
                 subject="Test Subject",
@@ -183,7 +181,6 @@ class TestClassicEmailHandler:
                 bcc=["bcc@example.com"],
             )
 
-            # Verify the client method was called correctly
             mock_send.assert_called_once_with(
                 ["recipient@example.com"],
                 "Test Subject",
@@ -197,18 +194,15 @@ class TestClassicEmailHandler:
             )
 
     @pytest.mark.asyncio
-    async def test_send_email_with_attachments(self, classic_handler, tmp_path):
-        """Test send_email method with attachments."""
-        # Create a temporary test file
+    async def test_send_email_with_attachments(self, classic_handler, tmp_path, monkeypatch):
+        """Test send_email method with attachments sends via SMTP when SEND_TO_DRAFTS=False."""
+        monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         test_file = tmp_path / "test_attachment.txt"
         test_file.write_text("This is a test attachment")
 
-        # Mock the outgoing_client.send_email method
         mock_send = AsyncMock()
 
-        # Apply the mock
         with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
-            # Call the method with attachments
             await classic_handler.send_email(
                 recipients=["recipient@example.com"],
                 subject="Test Subject",
@@ -216,7 +210,6 @@ class TestClassicEmailHandler:
                 attachments=[str(test_file)],
             )
 
-            # Verify the client method was called correctly with attachments
             mock_send.assert_called_once_with(
                 ["recipient@example.com"],
                 "Test Subject",
@@ -231,10 +224,10 @@ class TestClassicEmailHandler:
 
     @pytest.mark.asyncio
     async def test_delete_emails(self, classic_handler):
-        """Test delete_emails method."""
-        mock_delete = AsyncMock(return_value=(["123", "456"], []))
+        """Test delete_emails moves to Trash instead of permanently deleting."""
+        mock_move = AsyncMock(return_value=(["123", "456"], []))
 
-        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+        with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
             deleted_ids, failed_ids = await classic_handler.delete_emails(
                 email_ids=["123", "456"],
                 mailbox="INBOX",
@@ -242,29 +235,30 @@ class TestClassicEmailHandler:
 
             assert deleted_ids == ["123", "456"]
             assert failed_ids == []
-            mock_delete.assert_called_once_with(["123", "456"], "INBOX")
+            # Must move to "Trash" (default), NOT call incoming_client.delete_emails
+            mock_move.assert_called_once_with(["123", "456"], "Trash", "INBOX")
 
     @pytest.mark.asyncio
     async def test_delete_emails_with_failures(self, classic_handler):
         """Test delete_emails method with some failures."""
-        mock_delete = AsyncMock(return_value=(["123"], ["456"]))
+        mock_move = AsyncMock(return_value=(["123"], ["456"]))
 
-        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+        with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
             deleted_ids, failed_ids = await classic_handler.delete_emails(
                 email_ids=["123", "456"],
-                mailbox="Trash",
+                mailbox="INBOX",
             )
 
             assert deleted_ids == ["123"]
             assert failed_ids == ["456"]
-            mock_delete.assert_called_once_with(["123", "456"], "Trash")
+            mock_move.assert_called_once_with(["123", "456"], "Trash", "INBOX")
 
     @pytest.mark.asyncio
     async def test_delete_emails_custom_mailbox(self, classic_handler):
-        """Test delete_emails method with custom mailbox."""
-        mock_delete = AsyncMock(return_value=(["789"], []))
+        """Test delete_emails method moves from custom source mailbox to Trash."""
+        mock_move = AsyncMock(return_value=(["789"], []))
 
-        with patch.object(classic_handler.incoming_client, "delete_emails", mock_delete):
+        with patch.object(classic_handler.incoming_client, "move_emails", mock_move):
             deleted_ids, failed_ids = await classic_handler.delete_emails(
                 email_ids=["789"],
                 mailbox="Archive",
@@ -272,7 +266,7 @@ class TestClassicEmailHandler:
 
             assert deleted_ids == ["789"]
             assert failed_ids == []
-            mock_delete.assert_called_once_with(["789"], "Archive")
+            mock_move.assert_called_once_with(["789"], "Trash", "Archive")
 
     @pytest.mark.asyncio
     async def test_download_attachment(self, classic_handler, tmp_path):
@@ -306,8 +300,9 @@ class TestClassicEmailHandler:
             mock_download.assert_called_once_with("123", "document.pdf", save_path, "INBOX")
 
     @pytest.mark.asyncio
-    async def test_send_email_with_reply_headers(self, classic_handler):
-        """Test sending email with reply headers."""
+    async def test_send_email_with_reply_headers(self, classic_handler, monkeypatch):
+        """Test sending email with reply headers (SEND_TO_DRAFTS=False to test SMTP path)."""
+        monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         mock_smtp = AsyncMock()
         mock_smtp.__aenter__.return_value = mock_smtp
         mock_smtp.__aexit__.return_value = None
