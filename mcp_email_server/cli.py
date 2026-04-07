@@ -13,6 +13,9 @@ def stdio():
     mcp.run(transport="stdio")
 
 
+_LOOPBACK = ("127.0.0.1", "localhost", "::1")
+
+
 @app.command()
 def sse(
     host: str = "localhost",
@@ -30,6 +33,14 @@ def streamable_http(
 ):
     mcp.settings.host = host
     mcp.settings.port = port
+    allowed_hosts = os.environ.get("MCP_ALLOWED_HOSTS")
+    if allowed_hosts:
+        from mcp.server.transport_security import TransportSecuritySettings
+        mcp.settings.transport_security = TransportSecuritySettings(
+            allowed_hosts=allowed_hosts.split(","),
+        )
+    elif host not in _LOOPBACK:
+        mcp.settings.transport_security = None
     mcp.run(transport="streamable-http")
 
 
