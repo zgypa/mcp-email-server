@@ -1,7 +1,6 @@
 import asyncio
 import email.utils
 import mimetypes
-import os
 import re
 import ssl
 import time
@@ -1188,9 +1187,7 @@ class EmailClient:
             )
             append_status = append_result[0] if isinstance(append_result, tuple) else append_result
             if str(append_status).upper() != "OK":
-                raise OSError(
-                    f"Failed to append message to Drafts folder '{draft_folder_name}': {append_status}"
-                )
+                raise OSError(f"Failed to append message to Drafts folder '{draft_folder_name}': {append_status}")
 
             logger.info(f"Saved draft to '{draft_folder_name}'")
 
@@ -1268,6 +1265,8 @@ class EmailClient:
 
         Uses IMAP MOVE command (RFC 6851) if supported, otherwise falls back to COPY + DELETE.
         """
+        if source_mailbox == destination_mailbox:
+            return list(email_ids), []
         imap = self._imap_connect()
         moved_ids = []
         failed_ids = []
@@ -1296,8 +1295,11 @@ class EmailClient:
                         # Fallback: COPY then DELETE
                         copy_result = await imap.uid("copy", email_id, _quote_mailbox(destination_mailbox))
                         if copy_result[0] == "OK":
-                            await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
-                            moved_ids.append(email_id)
+                            store_result = await imap.uid("store", email_id, "+FLAGS", r"(\Deleted)")
+                            if store_result[0] == "OK":
+                                moved_ids.append(email_id)
+                            else:
+                                failed_ids.append(email_id)
                         else:
                             logger.error(f"COPY failed for {email_id}: {copy_result}")
                             failed_ids.append(email_id)
@@ -1305,9 +1307,10 @@ class EmailClient:
                     logger.error(f"Failed to move email {email_id}: {e}")
                     failed_ids.append(email_id)
 
-            # Expunge deleted messages (only needed for COPY+DELETE fallback)
-            if moved_ids and not has_move:
-                await imap.expunge()
+            # Never use mailbox-wide EXPUNGE: it could destroy unrelated messages.
+            # Without UIDPLUS, retain the copied originals with their Deleted flag.
+            if moved_ids and not has_move and b"UIDPLUS" in imap.protocol.capabilities:
+                await imap.uid("expunge", ",".join(moved_ids))
         finally:
             try:
                 await imap.logout()
@@ -1444,57 +1447,46 @@ class ClassicEmailHandler(EmailHandler):
         in_reply_to: str | None = None,
         references: str | None = None,
     ) -> None:
-        send_to_drafts = os.getenv("SEND_TO_DRAFTS", "True").lower() in ("true", "1", "yes", "on")
+        """Compatibility wrapper: always save a draft, never send via SMTP."""
+        await self.save_to_drafts(recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references)
+
+    async def save_to_drafts(
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
+        attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> None:
+        """Save to Drafts unconditionally; no environment or config can enable sending."""
 
         if self.signature and not html:
             body = body + "\n\n-- \n" + self.signature
 
-        if send_to_drafts:
-            # Safety gate: save to Drafts instead of sending via SMTP.
-            # Set SEND_TO_DRAFTS=False in the environment to actually send.
-            if not self.draft_folder_name:
-                raise ValueError(
-                    f"Cannot save to Drafts: no draft_folder_name is configured for account "
-                    f"'{self.email_settings.account_name}'. "
-                    f"Open {CONFIG_PATH} and add the following line under the [[emails]] "
-                    f"section for this account:\n"
-                    f'    draft_folder_name = "Drafts"  '
-                    f"# Replace with the correct folder name for your provider "
-                    f"(e.g. \"[Gmail]/Drafts\", \"INBOX.Bozze\")."
-                )
-            logger.warning(
-                "SEND_TO_DRAFTS=True: saving email to Drafts folder instead of sending. "
-                "Set SEND_TO_DRAFTS=False to enable actual sending."
+        if not self.draft_folder_name:
+            raise ValueError(
+                f"Cannot save to Drafts: no draft_folder_name is configured for account "
+                f"'{self.email_settings.account_name}'. "
+                f"Open {CONFIG_PATH} and add draft_folder_name under this account's [[emails]] section "
+                f'(e.g. draft_folder_name = "Drafts", "[Gmail]/Drafts", or "INBOX.Bozze").'
             )
-            msg = self.outgoing_client.build_email_message(
-                recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
-            )
-            try:
-                await self.outgoing_client.save_to_drafts(
-                    msg,
-                    self.email_settings.incoming,
-                    self.draft_folder_name,
-                )
-            except Exception as e:
-                logger.error(f"Failed to save email to Drafts folder: {e}", exc_info=True)
-                raise
-        else:
-            msg = await self.outgoing_client.send_email(
-                recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
-            )
-
-            # Save to Sent folder if enabled
-            if self.save_to_sent and msg:
-                try:
-                    await self.outgoing_client.append_to_sent(
-                        msg,
-                        self.email_settings.incoming,
-                        self.sent_folder_name,
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to save email to Sent folder: {e}", exc_info=True)
+        msg = self.outgoing_client.build_email_message(
+            recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+        )
+        # Drafts need Bcc for later manual sending; the SMTP builder omits it.
+        if bcc:
+            msg["Bcc"] = ", ".join(bcc)
+        await self.outgoing_client.save_to_drafts(msg, self.email_settings.incoming, self.draft_folder_name)
 
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Compatibility wrapper: always move to Trash, never permanently delete."""
+        return await self.move_to_trash(email_ids, mailbox)
+
+    async def move_to_trash(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """Move emails to Trash instead of permanently deleting them.
 
         Permanent IMAP deletion is disabled for safety. Emails are moved to the

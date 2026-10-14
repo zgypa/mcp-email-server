@@ -192,16 +192,20 @@ class TestClassicEmailHandlerSaveToSent:
         assert handler.save_to_sent is False
 
     @pytest.mark.asyncio
-    async def test_send_email_calls_append_to_sent(self, email_settings_with_save_to_sent, monkeypatch):
-        """Test that send_email calls append_to_sent when enabled (SEND_TO_DRAFTS=False)."""
+    async def test_send_email_never_appends_to_sent(self, email_settings_with_save_to_sent, monkeypatch):
+        """save_to_sent cannot enable sending or mark a draft as sent."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         handler = ClassicEmailHandler(email_settings_with_save_to_sent)
+        handler.draft_folder_name = "Drafts"
 
         mock_msg = MIMEText("Test body")
         mock_send = AsyncMock(return_value=mock_msg)
         mock_append = AsyncMock(return_value=True)
 
-        with patch.object(handler.outgoing_client, "send_email", mock_send):
+        with (
+            patch.object(handler.outgoing_client, "send_email", mock_send),
+            patch.object(handler.outgoing_client, "save_to_drafts") as save,
+        ):
             with patch.object(handler.outgoing_client, "append_to_sent", mock_append):
                 await handler.send_email(
                     recipients=["recipient@example.com"],
@@ -209,24 +213,25 @@ class TestClassicEmailHandlerSaveToSent:
                     body="Test body",
                 )
 
-                mock_send.assert_called_once()
-                mock_append.assert_called_once_with(
-                    mock_msg,
-                    email_settings_with_save_to_sent.incoming,
-                    "INBOX.Sent",
-                )
+                mock_send.assert_not_called()
+                mock_append.assert_not_called()
+                save.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_email_skips_append_when_disabled(self, email_settings_without_save_to_sent, monkeypatch):
-        """Test that send_email skips append_to_sent when disabled (SEND_TO_DRAFTS=False)."""
+        """Test that send_email only saves a draft when save_to_sent is disabled."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         handler = ClassicEmailHandler(email_settings_without_save_to_sent)
+        handler.draft_folder_name = "Drafts"
 
         mock_msg = MIMEText("Test body")
         mock_send = AsyncMock(return_value=mock_msg)
         mock_append = AsyncMock()
 
-        with patch.object(handler.outgoing_client, "send_email", mock_send):
+        with (
+            patch.object(handler.outgoing_client, "send_email", mock_send),
+            patch.object(handler.outgoing_client, "save_to_drafts") as save,
+        ):
             with patch.object(handler.outgoing_client, "append_to_sent", mock_append):
                 await handler.send_email(
                     recipients=["recipient@example.com"],
@@ -234,8 +239,9 @@ class TestClassicEmailHandlerSaveToSent:
                     body="Test body",
                 )
 
-                mock_send.assert_called_once()
+                mock_send.assert_not_called()
                 mock_append.assert_not_called()
+                save.assert_called_once()
 
 
 class TestEmailClientAppendToSent:
@@ -627,8 +633,8 @@ class TestHandlerErrorHandling:
     """Tests for error handling in ClassicEmailHandler.send_email."""
 
     @pytest.mark.asyncio
-    async def test_send_email_continues_on_append_error(self, monkeypatch):
-        """Test that send_email continues even if append_to_sent fails (SEND_TO_DRAFTS=False)."""
+    async def test_send_email_never_attempts_sent_append(self, monkeypatch):
+        """A failing Sent append is unreachable: send_email saves only a draft."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         settings = EmailSettings(
             account_name="test",
@@ -650,6 +656,7 @@ class TestHandlerErrorHandling:
             ),
             save_to_sent=True,
             sent_folder_name="Sent",
+            draft_folder_name="Drafts",
         )
         handler = ClassicEmailHandler(settings)
 
@@ -657,7 +664,10 @@ class TestHandlerErrorHandling:
         mock_send = AsyncMock(return_value=mock_msg)
         mock_append = AsyncMock(side_effect=Exception("IMAP connection failed"))
 
-        with patch.object(handler.outgoing_client, "send_email", mock_send):
+        with (
+            patch.object(handler.outgoing_client, "send_email", mock_send),
+            patch.object(handler.outgoing_client, "save_to_drafts") as save,
+        ):
             with patch.object(handler.outgoing_client, "append_to_sent", mock_append):
                 # Should not raise exception even though append fails
                 await handler.send_email(
@@ -666,7 +676,6 @@ class TestHandlerErrorHandling:
                     body="Test body",
                 )
 
-                # Email should still be sent
-                mock_send.assert_called_once()
-                # Append was attempted
-                mock_append.assert_called_once()
+                mock_send.assert_not_called()
+                mock_append.assert_not_called()
+                save.assert_called_once()

@@ -1,5 +1,16 @@
 # mcp-email-server
 
+## Safety policy of this fork
+
+The MCP tools intentionally cannot send email or permanently delete messages.
+Use `save_to_drafts` to compose drafts for manual review/sending and `move_to_trash`
+to move messages to the configured Trash folder. `send_email` and `delete_emails`
+are hard-coded compatibility wrappers for those operations. `SEND_TO_DRAFTS`
+is ignored, including when set to `False`. Configure `draft_folder_name` per account;
+missing configuration or a failed draft save raises an error, never falls back to SMTP.
+Drafts preserve recipients (including Bcc), reply headers, signatures, and attachments.
+Trash messages can be restored until provider-side retention removes them.
+
 [![Release](https://img.shields.io/github/v/release/ai-zerolab/mcp-email-server)](https://img.shields.io/github/v/release/ai-zerolab/mcp-email-server)
 [![Build status](https://img.shields.io/github/actions/workflow/status/ai-zerolab/mcp-email-server/main.yml?branch=main)](https://github.com/ai-zerolab/mcp-email-server/actions/workflows/main.yml?query=branch%3Amain)
 [![codecov](https://codecov.io/gh/ai-zerolab/mcp-email-server/branch/main/graph/badge.svg)](https://codecov.io/gh/ai-zerolab/mcp-email-server)

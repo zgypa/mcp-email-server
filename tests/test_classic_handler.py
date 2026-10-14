@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -168,11 +168,15 @@ class TestClassicEmailHandler:
 
     @pytest.mark.asyncio
     async def test_send_email(self, classic_handler, monkeypatch):
-        """Test send_email method sends via SMTP when SEND_TO_DRAFTS=False."""
+        """Test send_email composes a draft even when SEND_TO_DRAFTS=False."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "False")
-        mock_send = AsyncMock()
+        classic_handler.draft_folder_name = "Drafts"
+        mock_send = MagicMock()
 
-        with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
+        with (
+            patch.object(classic_handler.outgoing_client, "build_email_message", mock_send),
+            patch.object(classic_handler.outgoing_client, "save_to_drafts", AsyncMock()),
+        ):
             await classic_handler.send_email(
                 recipients=["recipient@example.com"],
                 subject="Test Subject",
@@ -195,14 +199,18 @@ class TestClassicEmailHandler:
 
     @pytest.mark.asyncio
     async def test_send_email_with_attachments(self, classic_handler, tmp_path, monkeypatch):
-        """Test send_email method with attachments sends via SMTP when SEND_TO_DRAFTS=False."""
+        """Test draft composition with attachments despite SEND_TO_DRAFTS=False."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         test_file = tmp_path / "test_attachment.txt"
         test_file.write_text("This is a test attachment")
 
-        mock_send = AsyncMock()
+        classic_handler.draft_folder_name = "Drafts"
+        mock_send = MagicMock()
 
-        with patch.object(classic_handler.outgoing_client, "send_email", mock_send):
+        with (
+            patch.object(classic_handler.outgoing_client, "build_email_message", mock_send),
+            patch.object(classic_handler.outgoing_client, "save_to_drafts", AsyncMock()),
+        ):
             await classic_handler.send_email(
                 recipients=["recipient@example.com"],
                 subject="Test Subject",
@@ -301,7 +309,7 @@ class TestClassicEmailHandler:
 
     @pytest.mark.asyncio
     async def test_send_email_with_reply_headers(self, classic_handler, monkeypatch):
-        """Test sending email with reply headers (SEND_TO_DRAFTS=False to test SMTP path)."""
+        """Test draft reply headers despite SEND_TO_DRAFTS=False."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         mock_smtp = AsyncMock()
         mock_smtp.__aenter__.return_value = mock_smtp
@@ -309,7 +317,8 @@ class TestClassicEmailHandler:
         mock_smtp.login = AsyncMock()
         mock_smtp.send_message = AsyncMock()
 
-        with patch("aiosmtplib.SMTP", return_value=mock_smtp):
+        classic_handler.draft_folder_name = "Drafts"
+        with patch.object(classic_handler.outgoing_client, "save_to_drafts") as save:
             await classic_handler.send_email(
                 recipients=["recipient@example.com"],
                 subject="Re: Test",
@@ -318,7 +327,7 @@ class TestClassicEmailHandler:
                 references="<original@example.com>",
             )
 
-            call_args = mock_smtp.send_message.call_args
+            call_args = save.call_args
             msg = call_args[0][0]
             assert msg["In-Reply-To"] == "<original@example.com>"
             assert msg["References"] == "<original@example.com>"

@@ -147,10 +147,12 @@ async def get_emails_content(
 
 
 @mcp.tool(
-    description="Send an email using the specified account. Supports replying to emails with proper threading when in_reply_to is provided.",
+    description="Compatibility wrapper for save_to_drafts: saves an email to Drafts; DOES NOT SEND. "
+    "This MCP intentionally provides no way to send emails or permanently delete them. "
+    "Use save_to_drafts instead; send manually in your email client after review.",
 )
 async def send_email(
-    account_name: Annotated[str, Field(description="The name of the email account to send from.")],
+    account_name: Annotated[str, Field(description="The name of the email account to save the draft in.")],
     recipients: Annotated[list[str], Field(description="A list of recipient email addresses.")],
     subject: Annotated[str, Field(description="The subject of the email.")],
     body: Annotated[str, Field(description="The body of the email.")],
@@ -164,7 +166,7 @@ async def send_email(
     ] = None,
     html: Annotated[
         bool,
-        Field(default=False, description="Whether to send the email as HTML (True) or plain text (False)."),
+        Field(default=False, description="Whether to compose the draft as HTML (True) or plain text (False)."),
     ] = False,
     attachments: Annotated[
         list[str] | None,
@@ -188,8 +190,30 @@ async def send_email(
         ),
     ] = None,
 ) -> str:
+    return await save_to_drafts(
+        account_name, recipients, subject, body, cc, bcc, html, attachments, in_reply_to, references
+    )
+
+
+@mcp.tool(
+    description="Save an email to the account's configured Drafts folder WITHOUT sending it. "
+    "Supports attachments and reply threading. Review and send manually in your email client. "
+    "This MCP intentionally provides no way to send emails or permanently delete them.",
+)
+async def save_to_drafts(
+    account_name: Annotated[str, Field(description="The name of the email account to save the draft in.")],
+    recipients: Annotated[list[str], Field(description="A list of intended recipient email addresses.")],
+    subject: Annotated[str, Field(description="The subject of the draft.")],
+    body: Annotated[str, Field(description="The body of the draft.")],
+    cc: Annotated[list[str] | None, Field(description="A list of CC email addresses.")] = None,
+    bcc: Annotated[list[str] | None, Field(description="A list of BCC email addresses.")] = None,
+    html: Annotated[bool, Field(description="Compose as HTML rather than plain text.")] = False,
+    attachments: Annotated[list[str] | None, Field(description="Absolute file paths to attach to the draft.")] = None,
+    in_reply_to: Annotated[str | None, Field(description="Message-ID of the email being replied to.")] = None,
+    references: Annotated[str | None, Field(description="Space-separated Message-IDs for the thread chain.")] = None,
+) -> str:
     handler = dispatch_handler(account_name)
-    await handler.send_email(
+    await handler.save_to_drafts(
         recipients,
         subject,
         body,
@@ -202,26 +226,42 @@ async def send_email(
     )
     recipient_str = ", ".join(recipients)
     attachment_info = f" with {len(attachments)} attachment(s)" if attachments else ""
-    return f"Email sent successfully to {recipient_str}{attachment_info}"
+    return f"Email saved to Drafts for {recipient_str}{attachment_info}. Not sent."
 
 
 @mcp.tool(
-    description="Delete one or more emails by their email_id. Use list_emails_metadata first to get the email_id."
+    description="Compatibility wrapper for move_to_trash: moves emails to Trash; NEVER permanently deletes. "
+    "Use move_to_trash instead. This MCP intentionally provides no way to send emails or permanently delete them. "
+    "Messages can be restored from Trash until the provider's retention policy removes them."
 )
 async def delete_emails(
     account_name: Annotated[str, Field(description="The name of the email account.")],
     email_ids: Annotated[
         list[str],
-        Field(description="List of email_id to delete (obtained from list_emails_metadata)."),
+        Field(description="List of email_id to move to Trash (obtained from list_emails_metadata)."),
     ],
-    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to delete emails from.")] = "INBOX",
+    mailbox: Annotated[str, Field(default="INBOX", description="The mailbox to move emails from.")] = "INBOX",
+) -> str:
+    return await move_to_trash(account_name, email_ids, mailbox)
+
+
+@mcp.tool(
+    description="Move emails to the account's configured Trash folder WITHOUT permanently deleting them. "
+    "Use list_emails_metadata first to get email_id values. Already-trashed messages are left unchanged. "
+    "Messages can be restored from Trash until the provider's retention policy removes them. "
+    "This MCP intentionally provides no way to send emails or permanently delete them."
+)
+async def move_to_trash(
+    account_name: Annotated[str, Field(description="The name of the email account.")],
+    email_ids: Annotated[list[str], Field(description="List of email_id to move to Trash.")],
+    mailbox: Annotated[str, Field(description="The mailbox to move emails from.")] = "INBOX",
 ) -> str:
     handler = dispatch_handler(account_name)
-    deleted_ids, failed_ids = await handler.delete_emails(email_ids, mailbox)
+    moved_ids, failed_ids = await handler.move_to_trash(email_ids, mailbox)
 
-    result = f"Successfully deleted {len(deleted_ids)} email(s)"
+    result = f"Successfully moved {len(moved_ids)} email(s) to Trash. Not permanently deleted."
     if failed_ids:
-        result += f", failed to delete {len(failed_ids)} email(s): {', '.join(failed_ids)}"
+        result += f" Failed to move {len(failed_ids)} email(s): {', '.join(failed_ids)}"
     return result
 
 

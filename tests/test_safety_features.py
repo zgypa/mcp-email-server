@@ -3,25 +3,24 @@ Safety feature tests: delete → Trash and send → Drafts.
 
 These tests verify the two core safety invariants:
 1. Calling delete_emails never permanently removes emails — they are moved to Trash.
-2. Calling send_email never sends via SMTP by default — emails go to Drafts.
+2. Calling send_email never sends via SMTP — emails always go to Drafts.
 
 Tests are structured at three levels:
 - Handler level: ClassicEmailHandler delegates to move_emails / save_to_drafts
 - IMAP level: the correct IMAP commands are issued (COPY before \\Deleted)
 - MCP tool level: end-to-end from MCP tool call down to the handler
 """
+
 from __future__ import annotations
 
 import asyncio
-from email.mime.text import MIMEText
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mcp_email_server.app import delete_emails, send_email
+from mcp_email_server.app import delete_emails, mcp, move_to_trash, save_to_drafts, send_email
 from mcp_email_server.config import EmailServer, EmailSettings
-from mcp_email_server.emails.classic import ClassicEmailHandler, EmailClient
-
+from mcp_email_server.emails.classic import ClassicEmailHandler
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -156,15 +155,12 @@ class TestDeleteImapCommands:
 
         copy_indices = [i for i, a in enumerate(call_args) if a[0].lower() == "copy"]
         delete_flag_indices = [
-            i for i, a in enumerate(call_args)
-            if a[0].lower() == "store" and r"(\Deleted)" in " ".join(a)
+            i for i, a in enumerate(call_args) if a[0].lower() == "store" and r"(\Deleted)" in " ".join(a)
         ]
 
         # A COPY to the Trash folder must have been issued
         assert copy_indices, "Expected at least one uid('copy', ...) call"
-        assert any("Trash" in " ".join(call_args[i]) for i in copy_indices), (
-            "COPY must target the Trash folder"
-        )
+        assert any("Trash" in " ".join(call_args[i]) for i in copy_indices), "COPY must target the Trash folder"
 
         # If \Deleted was set, it must come AFTER the COPY
         for del_idx in delete_flag_indices:
@@ -204,7 +200,7 @@ class TestDeleteMcpTool:
                 )
 
         mock_move.assert_called_once_with(["12345"], "Trash", "INBOX")
-        assert "deleted 1 email" in result
+        assert "moved 1 email(s) to Trash" in result
 
     @pytest.mark.asyncio
     async def test_mcp_delete_never_calls_imap_raw_delete(self, handler):
@@ -228,7 +224,7 @@ class TestDeleteMcpTool:
 
 
 class TestSendGoesToDrafts:
-    """ClassicEmailHandler.send_email saves to Drafts by default (SEND_TO_DRAFTS=True)."""
+    """ClassicEmailHandler.send_email always saves to Drafts."""
 
     @pytest.mark.asyncio
     async def test_raises_when_draft_folder_not_configured(self, monkeypatch):
@@ -305,8 +301,8 @@ class TestSendGoesToDrafts:
         assert draft_folder == "Drafts"
 
     @pytest.mark.asyncio
-    async def test_smtp_used_when_env_false(self, handler, monkeypatch):
-        """When SEND_TO_DRAFTS=False, email is sent via SMTP (not Drafts)."""
+    async def test_smtp_never_used_when_env_false(self, handler, monkeypatch):
+        """The legacy SEND_TO_DRAFTS=False override cannot enable SMTP."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         mock_smtp = AsyncMock()
         mock_smtp.__aenter__.return_value = mock_smtp
@@ -322,8 +318,8 @@ class TestSendGoesToDrafts:
                     body="Hello",
                 )
 
-        mock_smtp.send_message.assert_called_once()
-        mock_drafts.assert_not_called()
+        mock_smtp.send_message.assert_not_called()
+        mock_drafts.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_message_content_preserved_in_draft(self, handler, monkeypatch):
@@ -354,7 +350,7 @@ class TestSendGoesToDrafts:
 
 
 class TestSendMcpTool:
-    """MCP send_email tool routes to Drafts by default."""
+    """MCP send_email tool always routes to Drafts."""
 
     @pytest.mark.asyncio
     async def test_mcp_send_goes_to_drafts_by_default(self, handler, monkeypatch):
@@ -376,8 +372,8 @@ class TestSendMcpTool:
         mock_drafts.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_mcp_send_uses_smtp_when_disabled(self, handler, monkeypatch):
-        """MCP send_email tool: SMTP called when SEND_TO_DRAFTS=False."""
+    async def test_mcp_send_cannot_enable_smtp(self, handler, monkeypatch):
+        """MCP send_email tool ignores SEND_TO_DRAFTS=False."""
         monkeypatch.setenv("SEND_TO_DRAFTS", "False")
         mock_smtp = AsyncMock()
         mock_smtp.__aenter__.return_value = mock_smtp
@@ -395,5 +391,102 @@ class TestSendMcpTool:
                         body="Hello",
                     )
 
-        mock_smtp.send_message.assert_called_once()
-        mock_drafts.assert_not_called()
+        mock_smtp.send_message.assert_not_called()
+        mock_drafts.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_explicit_draft_tool_preserves_content(handler, tmp_path, monkeypatch):
+    monkeypatch.setenv("SEND_TO_DRAFTS", "False")
+    attachment = tmp_path / "test.txt"
+    attachment.write_text("attachment content")
+    handler.signature = "Signature"
+    with patch("mcp_email_server.app.dispatch_handler", return_value=handler):
+        with patch.object(handler.outgoing_client, "save_to_drafts") as save:
+            with patch("aiosmtplib.SMTP") as smtp:
+                result = await save_to_drafts(
+                    "test_account",
+                    ["to@example.com"],
+                    "Subject",
+                    "Body",
+                    ["cc@example.com"],
+                    ["bcc@example.com"],
+                    False,
+                    [str(attachment)],
+                    "<parent@example.com>",
+                    "<ancestor@example.com> <parent@example.com>",
+                )
+    smtp.assert_not_called()
+    message, incoming, folder = save.call_args.args
+    assert incoming == handler.email_settings.incoming
+    assert folder == "Drafts"
+    assert message["Cc"] == "cc@example.com"
+    assert message["Bcc"] == "bcc@example.com"
+    assert message["In-Reply-To"] == "<parent@example.com>"
+    assert message["References"] == "<ancestor@example.com> <parent@example.com>"
+    assert any(
+        "Signature" in part.get_payload(decode=True).decode()
+        for part in message.walk()
+        if part.get_content_type() == "text/plain"
+    )
+    assert any(part.get_filename() == "test.txt" for part in message.walk())
+    assert "Not sent" in result
+
+
+@pytest.mark.asyncio
+async def test_draft_save_failure_propagates(handler):
+    with patch.object(handler.outgoing_client, "save_to_drafts", side_effect=RuntimeError("APPEND failed")):
+        with patch("aiosmtplib.SMTP") as smtp:
+            with pytest.raises(RuntimeError, match="APPEND failed"):
+                await handler.send_email(["r@example.com"], "Subject", "Body")
+    smtp.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_explicit_trash_tool_reports_failures(handler):
+    with patch("mcp_email_server.app.dispatch_handler", return_value=handler):
+        with patch.object(handler.incoming_client, "move_emails", return_value=(["1"], ["2"])) as move:
+            result = await move_to_trash("test_account", ["1", "2"], "Sent")
+    move.assert_called_once_with(["1", "2"], "Trash", "Sent")
+    assert "moved 1 email(s) to Trash" in result
+    assert "Failed to move 1 email(s): 2" in result
+
+
+@pytest.mark.asyncio
+async def test_already_trashed_messages_are_not_deleted(handler):
+    with patch.object(handler.incoming_client, "_imap_connect") as connect:
+        assert await handler.delete_emails(["1"], "Trash") == (["1"], [])
+    connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capabilities", [[], [b"UIDPLUS"], [b"MOVE"]])
+async def test_move_never_expunge_unrelated_messages(handler, mock_imap, capabilities):
+    mock_imap.protocol.capabilities = capabilities
+    with patch.object(handler.incoming_client, "_imap_connect", return_value=mock_imap):
+        assert await handler.move_to_trash(["1", "2"]) == (["1", "2"], [])
+    mock_imap.expunge.assert_not_called()
+    expunges = [call.args for call in mock_imap.uid.call_args_list if call.args[0] == "expunge"]
+    assert expunges == ([("expunge", "1,2")] if capabilities == [b"UIDPLUS"] else [])
+
+
+@pytest.mark.asyncio
+async def test_failed_copy_never_marks_or_expunge(handler, mock_imap):
+    mock_imap.uid.return_value = ("NO", [])
+    with patch.object(handler.incoming_client, "_imap_connect", return_value=mock_imap):
+        assert await handler.move_to_trash(["1"]) == ([], ["1"])
+    assert [call.args[0] for call in mock_imap.uid.call_args_list] == ["copy"]
+    mock_imap.expunge.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tool_discovery_documents_safety():
+    tools = {tool.name: tool for tool in await mcp.list_tools()}
+    for name in ("send_email", "save_to_drafts", "delete_emails", "move_to_trash"):
+        assert "no way to send emails or permanently delete them" in tools[name].description
+    assert "DOES NOT SEND" in tools["send_email"].description
+    assert "NEVER permanently deletes" in tools["delete_emails"].description
+    send_schema = tools["send_email"].inputSchema
+    draft_schema = tools["save_to_drafts"].inputSchema
+    assert send_schema["required"] == draft_schema["required"]
+    assert send_schema["properties"].keys() == draft_schema["properties"].keys()

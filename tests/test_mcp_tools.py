@@ -375,10 +375,11 @@ class TestMcpTools:
             )
 
             # Verify the return value
-            assert result == "Email sent successfully to recipient@example.com"
+            assert result == "Email saved to Drafts for recipient@example.com. Not sent."
+            mock_handler.send_email.assert_not_called()
 
             # Verify send_email was called correctly
-            mock_handler.send_email.assert_called_once_with(
+            mock_handler.save_to_drafts.assert_called_once_with(
                 ["recipient@example.com"],
                 "Test Subject",
                 "Test Body",
@@ -394,7 +395,7 @@ class TestMcpTools:
     async def test_delete_emails(self):
         """Test delete_emails MCP tool."""
         mock_handler = AsyncMock()
-        mock_handler.delete_emails.return_value = (["12345", "12346"], [])
+        mock_handler.move_to_trash.return_value = (["12345", "12346"], [])
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
             result = await delete_emails(
@@ -402,14 +403,15 @@ class TestMcpTools:
                 email_ids=["12345", "12346"],
             )
 
-            assert result == "Successfully deleted 2 email(s)"
-            mock_handler.delete_emails.assert_called_once_with(["12345", "12346"], "INBOX")
+            assert result == "Successfully moved 2 email(s) to Trash. Not permanently deleted."
+            mock_handler.delete_emails.assert_not_called()
+            mock_handler.move_to_trash.assert_called_once_with(["12345", "12346"], "INBOX")
 
     @pytest.mark.asyncio
     async def test_delete_emails_with_failures(self):
         """Test delete_emails MCP tool with some failures."""
         mock_handler = AsyncMock()
-        mock_handler.delete_emails.return_value = (["12345"], ["12346", "12347"])
+        mock_handler.move_to_trash.return_value = (["12345"], ["12346", "12347"])
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
             result = await delete_emails(
@@ -417,14 +419,17 @@ class TestMcpTools:
                 email_ids=["12345", "12346", "12347"],
             )
 
-            assert result == "Successfully deleted 1 email(s), failed to delete 2 email(s): 12346, 12347"
-            mock_handler.delete_emails.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
+            assert (
+                result
+                == "Successfully moved 1 email(s) to Trash. Not permanently deleted. Failed to move 2 email(s): 12346, 12347"
+            )
+            mock_handler.move_to_trash.assert_called_once_with(["12345", "12346", "12347"], "INBOX")
 
     @pytest.mark.asyncio
     async def test_delete_emails_with_mailbox(self):
         """Test delete_emails MCP tool with custom mailbox."""
         mock_handler = AsyncMock()
-        mock_handler.delete_emails.return_value = (["12345"], [])
+        mock_handler.move_to_trash.return_value = (["12345"], [])
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
             result = await delete_emails(
@@ -433,8 +438,8 @@ class TestMcpTools:
                 mailbox="Trash",
             )
 
-            assert result == "Successfully deleted 1 email(s)"
-            mock_handler.delete_emails.assert_called_once_with(["12345"], "Trash")
+            assert result == "Successfully moved 1 email(s) to Trash. Not permanently deleted."
+            mock_handler.move_to_trash.assert_called_once_with(["12345"], "Trash")
 
     @pytest.mark.asyncio
     async def test_download_attachment_disabled(self):
@@ -493,7 +498,7 @@ class TestMcpTools:
     async def test_send_email_with_reply_headers(self):
         """Test send_email MCP tool with reply headers."""
         mock_handler = AsyncMock()
-        mock_handler.send_email = AsyncMock()
+        mock_handler.save_to_drafts = AsyncMock()
 
         with patch("mcp_email_server.app.dispatch_handler", return_value=mock_handler):
             result = await send_email(
@@ -505,8 +510,8 @@ class TestMcpTools:
                 references="<original@example.com>",
             )
 
-            mock_handler.send_email.assert_called_once()
-            call_args = mock_handler.send_email.call_args
+            mock_handler.save_to_drafts.assert_called_once()
+            call_args = mock_handler.save_to_drafts.call_args
             # Verify in_reply_to and references were passed (positions 7 and 8 after cc, bcc, html, attachments)
             assert "<original@example.com>" in str(call_args)
             assert "recipient@example.com" in result

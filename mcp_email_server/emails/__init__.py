@@ -65,7 +65,7 @@ class EmailHandler(abc.ABC):
         references: str | None = None,
     ) -> None:
         """
-        Send email
+        Compatibility wrapper for save_to_drafts. Never sends email.
 
         Args:
             recipients: List of recipient email addresses.
@@ -73,11 +73,26 @@ class EmailHandler(abc.ABC):
             body: Email body content.
             cc: List of CC email addresses.
             bcc: List of BCC email addresses.
-            html: Whether to send as HTML (True) or plain text (False).
+            html: Whether to compose as HTML (True) or plain text (False).
             attachments: List of file paths to attach.
             in_reply_to: Message-ID of the email being replied to (for threading).
             references: Space-separated Message-IDs for the thread chain.
         """
+
+    @abc.abstractmethod
+    async def save_to_drafts(
+        self,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+        html: bool = False,
+        attachments: list[str] | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
+    ) -> None:
+        """Save an email to Drafts without sending it."""
 
     @abc.abstractmethod
     async def list_mailboxes(self) -> list[dict]:
@@ -114,8 +129,12 @@ class EmailHandler(abc.ABC):
     @abc.abstractmethod
     async def delete_emails(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
         """
-        Delete emails by their IDs. Returns (deleted_ids, failed_ids)
+        Compatibility wrapper for move_to_trash. Returns (moved_ids, failed_ids).
         """
+
+    @abc.abstractmethod
+    async def move_to_trash(self, email_ids: list[str], mailbox: str = "INBOX") -> tuple[list[str], list[str]]:
+        """Move emails to Trash without permanently deleting them."""
 
     @abc.abstractmethod
     async def mark_emails_as_read(
